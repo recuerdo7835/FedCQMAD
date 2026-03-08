@@ -1,0 +1,90 @@
+
+import torch
+import numpy as np
+from tqdm import tqdm
+import utils.data_qcnn as data_loader
+import utils.model_cmad as model_loader
+
+
+class Trainer:
+    def __init__(self, num_classes: int):
+        self.X_train, self.Y_train, self.X_test, self.Y_test = data_loader.get_data()
+        self.model = model_loader.MyModel(num_classes=num_classes)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+
+        print(f"Model moved to device: {self.device}")
+        if torch.cuda.is_available():
+            print(f"GPU Device: {torch.cuda.get_device_name()}")
+            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+
+        n_classes = int(self.Y_train.max() + 1)
+        class_counts = np.bincount(self.Y_train, minlength=n_classes).astype(np.float32)
+        class_weights = class_counts.sum() / (np.maximum(class_counts, 1.0) * n_classes)
+        self.criterion = torch.nn.CrossEntropyLoss(
+            weight=torch.tensor(class_weights, dtype=torch.float32).to(self.device)
+        )
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            print("CUDA optimization enabled")
+
+    def train(self, num_epochs: int = 20, batch_size: int = 32):
+        self.model.train()
+        for epoch in range(num_epochs):
+            running_loss = 0.0
+            correct = 0
+            total = 0
+            num_batches = max(1, len(self.X_train) // batch_size)
+            perm = np.random.permutation(len(self.X_train))
+            for start in tqdm(
+                range(0, len(self.X_train), batch_size),
+                total=num_batches,
+                desc=f"Training {epoch+1}/{num_epochs}",
+            ):
+                idx = perm[start : start + batch_size]
+                inputs = torch.tensor(self.X_train[idx], dtype=torch.float32).to(self.device)
+                labels = torch.tensor(self.Y_train[idx], dtype=torch.long).to(self.device)
+                self.optimizer.zero_grad()
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, labels)
+                loss.backward()
+                self.optimizer.step()
+                running_loss += loss.item()
+                _, pred = torch.max(outputs, 1)
+                correct += (pred == labels).sum().item()
+                total += labels.size(0)
+            print(f"Epoch {epoch+1}/{num_epochs} Loss: {running_loss/num_batches:.4f} Acc: {correct/max(1,total):.4f}")
+
+    def evaluate(self, batch_size: int = 32):
+        self.model.eval()
+        total_loss = 0.0
+        correct = 0
+        total = 0
+        num_batches = max(1, len(self.X_test) // batch_size)
+        with torch.no_grad():
+            for i in tqdm(range(0, len(self.X_test), batch_size), total=num_batches, desc="Evaluating"):
+                inputs = torch.tensor(
+                    self.X_test[i : i + batch_size], dtype=torch.float32
+                ).to(self.device)
+                labels = torch.tensor(
+                    self.Y_test[i : i + batch_size], dtype=torch.long
+                ).to(self.device)
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, labels)
+                total_loss += loss.item()
+                _, pred = torch.max(outputs, 1)
+                correct += (pred == labels).sum().item()
+                total += labels.size(0)
+        print(f"Test Loss: {total_loss/max(1,num_batches):.4f} Test Acc: {correct/max(1,total):.4f}")
+
+
+if __name__ == "__main__":
+    print("FedCMAD (Classical CNN) Training Started - MalMem-2022")
+    print(f"PyTorch Version: {torch.__version__}")
+    print(f"CUDA Available: {torch.cuda.is_available()}")
+
+    trainer = Trainer(num_classes=4)
+    trainer.train(num_epochs=20)
+    trainer.evaluate()
